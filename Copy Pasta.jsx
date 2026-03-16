@@ -3,6 +3,7 @@
 
 (function CopyPastaPanel(thisObj) {
     var SCRIPT_NAME = "Copy Pasta";
+    var SCRIPT_VERSION = "1.6";
     var TEMP_FOLDER_NAME = "CopyPastaTemp";
     var IMPORT_FOLDER_NAME = "CopyPasta Imports";
 
@@ -39,6 +40,19 @@
         }
     }
 
+    function readTextFile(fileObj) {
+        if (!fileObj || !fileObj.exists) return "";
+        if (!fileObj.open("r")) return "";
+        try {
+            fileObj.encoding = "UTF-8";
+            return fileObj.read();
+        } catch (e) {
+            return "";
+        } finally {
+            fileObj.close();
+        }
+    }
+
     function getWindowsPowerShellExe() {
         var sysRoot = $.getenv("SystemRoot");
         if (!sysRoot || sysRoot === "") {
@@ -50,17 +64,23 @@
     function runPowerShellWindows(psCode) {
         var tempScript = null;
         var out = "";
+        var cmd = "";
 
         try {
             tempScript = uniqueFile(getTempFolder(), "copy_pasta_clipboard", "ps1");
             writeTextFile(tempScript, psCode);
 
             var exeFile = getWindowsPowerShellExe();
-            var exe = exeFile.exists ? ('"' + exeFile.fsName + '"') : "powershell";
-            var cmd = exe + " -NoProfile -STA -ExecutionPolicy Bypass -File \"" + tempScript.fsName + "\"";
-
+            var exePath = exeFile.exists ? exeFile.fsName : "powershell";
+            cmd = '"' + exePath + '" -NoProfile -STA -ExecutionPolicy Bypass -File "' + tempScript.fsName + '" 2>&1';
             out = system.callSystem(cmd);
-            return out || "";
+            if (out && out !== "") return out;
+
+            cmd = 'powershell -NoProfile -STA -ExecutionPolicy Bypass -File "' + tempScript.fsName + '" 2>&1';
+            out = system.callSystem(cmd);
+            if (out && out !== "") return out;
+
+            return "";
         } catch (err) {
             return "ERR:" + err.toString();
         } finally {
@@ -103,6 +123,18 @@
         if (!app.project) return null;
         var item = app.project.activeItem;
         return (item && item instanceof CompItem) ? item : null;
+    }
+
+    function hasScriptFileNetworkAccess() {
+        try {
+            return app.preferences.getPrefAsLong("Main Pref Section", "Pref_SCRIPTING_FILE_NETWORK_SECURITY") === 1;
+        } catch (e) {
+            return true;
+        }
+    }
+
+    function isBlankText(str) {
+        return !str || str.replace(/\s+/g, "") === "";
     }
 
     function isShapeLayer(layer) {
@@ -262,10 +294,16 @@
 
     function setClipboardImageWindows(filePath) {
         var p = psQuote(filePath);
+        var resultFile = uniqueFile(getTempFolder(), "copy_pasta_result_set", "txt");
+        var r = psQuote(resultFile.fsName);
         var ps =
+            "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8\n" +
+            "$OutputEncoding=[System.Text.Encoding]::UTF8\n" +
             "$ErrorActionPreference='Stop'\n" +
             "$path='" + p + "'\n" +
-            "if(-not (Test-Path -LiteralPath $path)){ Write-Output 'ERR:Rendered image file not found'; exit 0 }\n" +
+            "$resultPath='" + r + "'\n" +
+            "function Write-Result([string]$s){ try{ Set-Content -LiteralPath $resultPath -Value $s -Encoding UTF8 -Force }catch{}; Write-Output $s }\n" +
+            "if(-not (Test-Path -LiteralPath $path)){ Write-Result 'ERR:Rendered image file not found'; exit 0 }\n" +
             "$ok=$false\n" +
             "$err=''\n" +
             "try{\n" +
@@ -287,6 +325,20 @@
             "}catch{ if($err -eq ''){$err=$_.Exception.Message} }\n" +
             "if(-not $ok){\n" +
             "  try{\n" +
+            "    Add-Type -AssemblyName System.Windows.Forms | Out-Null\n" +
+            "    Add-Type -AssemblyName System.Drawing | Out-Null\n" +
+            "    $img3=[System.Drawing.Image]::FromFile($path)\n" +
+            "    $dobj=New-Object System.Windows.Forms.DataObject\n" +
+            "    $dobj.SetData([System.Windows.Forms.DataFormats]::Bitmap,$img3)\n" +
+            "    [System.Windows.Forms.Clipboard]::SetDataObject($dobj,$true)\n" +
+            "    try{$img3.Dispose()}catch{}\n" +
+            "    $ok=$true\n" +
+            "  }catch{\n" +
+            "    if($err -eq ''){$err=$_.Exception.Message}\n" +
+            "  }\n" +
+            "}\n" +
+            "if(-not $ok){\n" +
+            "  try{\n" +
             "    Add-Type -AssemblyName PresentationCore | Out-Null\n" +
             "    Add-Type -AssemblyName WindowsBase | Out-Null\n" +
             "    for($i=0;$i -lt 12 -and -not $ok;$i++){\n" +
@@ -306,12 +358,35 @@
             "    }\n" +
             "  }catch{ if($err -eq ''){$err=$_.Exception.Message} }\n" +
             "}\n" +
-            "if($ok){ Write-Output 'OK' } else { if($err -eq ''){$err='Clipboard image write failed'}; Write-Output ('ERR:' + $err) }\n";
+            "if($ok){ Write-Result 'OK' } else { if($err -eq ''){$err='Clipboard image write failed'}; Write-Result ('ERR:' + $err) }\n";
 
         var out = runPowerShellWindows(ps);
+        if (isBlankText(out)) {
+            out = readTextFile(resultFile);
+        }
+
+        try { if (resultFile.exists) resultFile.remove(); } catch (cleanupResult1) {}
 
         if (out && out.indexOf("OK") !== -1) {
             return { ok: true, message: "" };
+        }
+
+        if (isBlankText(out)) {
+            var verifyFile = null;
+            try {
+                verifyFile = uniqueFile(getTempFolder(), "copy_pasta_verify", "png");
+                var verify = getClipboardImageWindows(verifyFile.fsName);
+                if (verify.ok) {
+                    return { ok: true, message: "" };
+                }
+                return { ok: false, message: verify.message || "Clipboard verification failed." };
+            } catch (verifyErr) {
+                return { ok: false, message: "No output from PowerShell and clipboard verification failed: " + verifyErr.toString() };
+            } finally {
+                try {
+                    if (verifyFile && verifyFile.exists) verifyFile.remove();
+                } catch (cleanupErr1) {}
+            }
         }
 
         return { ok: false, message: out || "Unknown clipboard error." };
@@ -319,11 +394,18 @@
 
     function getClipboardImageWindows(filePath) {
         var p = psQuote(filePath);
+        var resultFile = uniqueFile(getTempFolder(), "copy_pasta_result_get", "txt");
+        var r = psQuote(resultFile.fsName);
         var ps =
+            "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8\n" +
+            "$OutputEncoding=[System.Text.Encoding]::UTF8\n" +
             "$ErrorActionPreference='Stop'\n" +
             "$outPath='" + p + "'\n" +
+            "$resultPath='" + r + "'\n" +
             "$saved=$false\n" +
             "$err=''\n" +
+            "$lastFormats=''\n" +
+            "function Write-Result([string]$s){ try{ Set-Content -LiteralPath $resultPath -Value $s -Encoding UTF8 -Force }catch{}; Write-Output $s }\n" +
             "function Save-PngStream($stream, $path){\n" +
             "  if($stream -eq $null){ return $false }\n" +
             "  $fs=[System.IO.File]::Open($path,[System.IO.FileMode]::Create,[System.IO.FileAccess]::Write)\n" +
@@ -332,6 +414,34 @@
             "  $fs.Dispose()\n" +
             "  try{ $stream.Dispose() }catch{}\n" +
             "  return $true\n" +
+            "}\n" +
+            "function Try-DownloadImageToPng($url, $path){\n" +
+            "  if([string]::IsNullOrWhiteSpace($url)){ return $false }\n" +
+            "  $url=$url.Trim()\n" +
+            "  if($url -notmatch '^https?://'){ return $false }\n" +
+            "  $tmp=[System.IO.Path]::GetTempFileName()\n" +
+            "  try{\n" +
+            "    $ProgressPreference='SilentlyContinue'\n" +
+            "    Invoke-WebRequest -Uri $url -OutFile $tmp -UseBasicParsing -ErrorAction Stop | Out-Null\n" +
+            "    $img=[System.Drawing.Image]::FromFile($tmp)\n" +
+            "    $img.Save($path,[System.Drawing.Imaging.ImageFormat]::Png)\n" +
+            "    $img.Dispose()\n" +
+            "    return $true\n" +
+            "  }catch{\n" +
+            "    return $false\n" +
+            "  }finally{\n" +
+            "    try{ if(Test-Path -LiteralPath $tmp){ Remove-Item -LiteralPath $tmp -Force } }catch{}\n" +
+            "  }\n" +
+            "}\n" +
+            "function Extract-ImageUrl($text){\n" +
+            "  if([string]::IsNullOrWhiteSpace($text)){ return $null }\n" +
+            "  $m=[regex]::Match($text,'https?://[^\\s\"''<>]+')\n" +
+            "  if($m.Success){\n" +
+            "    $u=$m.Value\n" +
+            "    $u=$u -replace '&amp;','&'\n" +
+            "    return $u\n" +
+            "  }\n" +
+            "  return $null\n" +
             "}\n" +
             "try{\n" +
             "  Add-Type -AssemblyName System.Windows.Forms | Out-Null\n" +
@@ -350,6 +460,7 @@
             "      $data=[System.Windows.Forms.Clipboard]::GetDataObject()\n" +
             "      if($data -ne $null -and -not $saved){\n" +
             "        $formats=$data.GetFormats()\n" +
+            "        try{ $lastFormats=($formats -join ', ') }catch{}\n" +
             "        foreach($fmt in $formats){\n" +
             "          if($fmt -match 'PNG'){\n" +
             "            $png=$data.GetData($fmt)\n" +
@@ -417,15 +528,68 @@
             "    }\n" +
             "  }catch{ if($err -eq ''){$err=$_.Exception.Message} }\n" +
             "}\n" +
-            "if($saved){ Write-Output 'OK' } elseif($err -ne ''){ Write-Output ('ERR:' + $err) } else { Write-Output 'NO_IMAGE' }\n";
+            "if(-not $saved){\n" +
+            "  try{\n" +
+            "    $urlCandidate=$null\n" +
+            "    $d=[System.Windows.Forms.Clipboard]::GetDataObject()\n" +
+            "    if($d -ne $null){\n" +
+            "      if($d.GetDataPresent('HTML Format')){\n" +
+            "        $html=$d.GetData('HTML Format')\n" +
+            "        $urlCandidate=Extract-ImageUrl $html\n" +
+            "      }\n" +
+            "      if($urlCandidate -eq $null -and $d.GetDataPresent([System.Windows.Forms.DataFormats]::UnicodeText)){\n" +
+            "        $txt=$d.GetData([System.Windows.Forms.DataFormats]::UnicodeText)\n" +
+            "        $urlCandidate=Extract-ImageUrl $txt\n" +
+            "      }\n" +
+            "      if($urlCandidate -eq $null -and $d.GetDataPresent([System.Windows.Forms.DataFormats]::Text)){\n" +
+            "        $txt2=$d.GetData([System.Windows.Forms.DataFormats]::Text)\n" +
+            "        $urlCandidate=Extract-ImageUrl $txt2\n" +
+            "      }\n" +
+            "    }\n" +
+            "    if($urlCandidate -eq $null){\n" +
+            "      try{\n" +
+            "        $clipTxt=Get-Clipboard -Raw\n" +
+            "        $urlCandidate=Extract-ImageUrl $clipTxt\n" +
+            "      }catch{}\n" +
+            "    }\n" +
+            "    if($urlCandidate -ne $null){\n" +
+            "      if(Try-DownloadImageToPng $urlCandidate $outPath){\n" +
+            "        $saved=$true\n" +
+            "      }elseif($err -eq ''){\n" +
+            "        $err='Clipboard had URL data but image download/convert failed'\n" +
+            "      }\n" +
+            "    }\n" +
+            "  }catch{ if($err -eq ''){$err=$_.Exception.Message} }\n" +
+            "}\n" +
+            "if($saved){ Write-Result 'OK' } elseif($err -ne ''){ Write-Result ('ERR:' + $err) } elseif($lastFormats -ne ''){ Write-Result ('NO_IMAGE:' + $lastFormats) } else { Write-Result 'NO_IMAGE' }\n";
 
         var out = runPowerShellWindows(ps);
+        if (isBlankText(out)) {
+            out = readTextFile(resultFile);
+        }
+
+        try { if (resultFile.exists) resultFile.remove(); } catch (cleanupResult2) {}
 
         if (out && out.indexOf("OK") !== -1) {
             return { ok: true, noImage: false, message: "" };
         }
+
+        var savedFile = new File(filePath);
+        if (savedFile.exists && savedFile.length > 0) {
+            return { ok: true, noImage: false, message: "" };
+        }
+
         if (out && out.indexOf("NO_IMAGE") !== -1) {
+            var details = out.replace(/\r?\n/g, " ");
+            if (details.indexOf("NO_IMAGE:") !== -1) {
+                details = details.substring(details.indexOf("NO_IMAGE:") + 9);
+                return { ok: false, noImage: true, message: "Clipboard does not contain a readable image format. Available formats: " + details };
+            }
             return { ok: false, noImage: true, message: "Clipboard does not contain an image." };
+        }
+
+        if (isBlankText(out)) {
+            return { ok: false, noImage: false, message: "PowerShell returned no status and no clipboard image file was created. PowerShell execution may be blocked by system policy." };
         }
 
         return { ok: false, noImage: false, message: out || "Clipboard read failed." };
@@ -589,6 +753,12 @@
     }
 
     function doCopy(statusText) {
+        if (!hasScriptFileNetworkAccess()) {
+            alert("Copy Pasta: Scripting file/network access is disabled.\nEnable it in Preferences > Scripting & Expressions > Allow Scripts to Write Files and Access Network.");
+            setStatus(statusText, "Enable scripting file/network access.", true);
+            return;
+        }
+
         var comp = getActiveComp();
         if (!comp) {
             alert("Copy Pasta: No active composition.\nOpen a composition and try again.");
@@ -642,6 +812,12 @@
     }
 
     function doPaste(statusText) {
+        if (!hasScriptFileNetworkAccess()) {
+            alert("Copy Pasta: Scripting file/network access is disabled.\nEnable it in Preferences > Scripting & Expressions > Allow Scripts to Write Files and Access Network.");
+            setStatus(statusText, "Enable scripting file/network access.", true);
+            return;
+        }
+
         var comp = getActiveComp();
         if (!comp) {
             alert("Copy Pasta: No active composition.\nOpen a composition and try again.");
@@ -657,7 +833,7 @@
 
             if (!readResult.ok) {
                 if (readResult.noImage) {
-                    alert("Copy Pasta: Clipboard does not contain an image.");
+                    alert("Copy Pasta: Clipboard does not contain a readable image.\n\n" + (readResult.message || ""));
                 } else {
                     alert("Copy Pasta: Could not read image from system clipboard.\n\n" + readResult.message);
                 }
@@ -724,7 +900,7 @@
         statusPanel.alignment = ["fill", "top"];
         statusPanel.margins = [8, 8, 8, 8];
 
-        var statusText = statusPanel.add("statictext", undefined, "Ready.");
+        var statusText = statusPanel.add("statictext", undefined, "Ready (v" + SCRIPT_VERSION + ").");
         statusText.alignment = ["fill", "top"];
         statusText.justify = "center";
         try { statusText.graphics.font = ScriptUI.newFont("Segoe UI", "REGULAR", 11); } catch (e2) {}
