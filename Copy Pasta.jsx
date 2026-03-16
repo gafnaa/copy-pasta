@@ -26,6 +26,50 @@
         return str.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
     }
 
+    function writeTextFile(fileObj, text) {
+        if (!fileObj.open("w")) {
+            throw new Error("Cannot write file: " + fileObj.fsName);
+        }
+        try {
+            fileObj.encoding = "UTF-8";
+            fileObj.lineFeed = "Unix";
+            fileObj.write(text);
+        } finally {
+            fileObj.close();
+        }
+    }
+
+    function getWindowsPowerShellExe() {
+        var sysRoot = $.getenv("SystemRoot");
+        if (!sysRoot || sysRoot === "") {
+            sysRoot = "C:/Windows";
+        }
+        return new File(sysRoot + "/System32/WindowsPowerShell/v1.0/powershell.exe");
+    }
+
+    function runPowerShellWindows(psCode) {
+        var tempScript = null;
+        var out = "";
+
+        try {
+            tempScript = uniqueFile(getTempFolder(), "copy_pasta_clipboard", "ps1");
+            writeTextFile(tempScript, psCode);
+
+            var exeFile = getWindowsPowerShellExe();
+            var exe = exeFile.exists ? ('"' + exeFile.fsName + '"') : "powershell";
+            var cmd = exe + " -NoProfile -STA -ExecutionPolicy Bypass -File \"" + tempScript.fsName + "\"";
+
+            out = system.callSystem(cmd);
+            return out || "";
+        } catch (err) {
+            return "ERR:" + err.toString();
+        } finally {
+            try {
+                if (tempScript && tempScript.exists) tempScript.remove();
+            } catch (cleanupErr) {}
+        }
+    }
+
     function ensureFolder(folder) {
         if (!folder.exists) {
             if (!folder.create()) {
@@ -219,24 +263,52 @@
     function setClipboardImageWindows(filePath) {
         var p = psQuote(filePath);
         var ps =
-            "$ErrorActionPreference='Stop';" +
-            "Add-Type -AssemblyName System.Windows.Forms;" +
-            "Add-Type -AssemblyName System.Drawing;" +
-            "$img=$null;" +
-            "$path='" + p + "';" +
-            "for($i=0;$i -lt 12 -and $img -eq $null;$i++){" +
-            "try{$img=[System.Drawing.Image]::FromFile($path)}catch{Start-Sleep -Milliseconds 120}" +
-            "};" +
-            "if($img -eq $null){Write-Output 'ERR:Could not open rendered image';exit}" +
-            "$setOk=$false;" +
-            "for($i=0;$i -lt 10 -and -not $setOk;$i++){" +
-            "try{[System.Windows.Forms.Clipboard]::SetImage($img);$setOk=$true}catch{Start-Sleep -Milliseconds 120}" +
-            "};" +
-            "$img.Dispose();" +
-            "if($setOk){Write-Output 'OK'}else{Write-Output 'ERR:Clipboard busy or inaccessible'}";
+            "$ErrorActionPreference='Stop'\n" +
+            "$path='" + p + "'\n" +
+            "if(-not (Test-Path -LiteralPath $path)){ Write-Output 'ERR:Rendered image file not found'; exit 0 }\n" +
+            "$ok=$false\n" +
+            "$err=''\n" +
+            "try{\n" +
+            "  Add-Type -AssemblyName System.Windows.Forms | Out-Null\n" +
+            "  Add-Type -AssemblyName System.Drawing | Out-Null\n" +
+            "  for($i=0;$i -lt 14 -and -not $ok;$i++){\n" +
+            "    $img=$null\n" +
+            "    try{\n" +
+            "      $img=[System.Drawing.Image]::FromFile($path)\n" +
+            "      [System.Windows.Forms.Clipboard]::SetImage($img)\n" +
+            "      $ok=$true\n" +
+            "    }catch{\n" +
+            "      $err=$_.Exception.Message\n" +
+            "      Start-Sleep -Milliseconds 120\n" +
+            "    }finally{\n" +
+            "      if($img -ne $null){ try{$img.Dispose()}catch{} }\n" +
+            "    }\n" +
+            "  }\n" +
+            "}catch{ if($err -eq ''){$err=$_.Exception.Message} }\n" +
+            "if(-not $ok){\n" +
+            "  try{\n" +
+            "    Add-Type -AssemblyName PresentationCore | Out-Null\n" +
+            "    Add-Type -AssemblyName WindowsBase | Out-Null\n" +
+            "    for($i=0;$i -lt 12 -and -not $ok;$i++){\n" +
+            "      try{\n" +
+            "        $bitmap=New-Object System.Windows.Media.Imaging.BitmapImage\n" +
+            "        $bitmap.BeginInit()\n" +
+            "        $bitmap.CacheOption=[System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad\n" +
+            "        $bitmap.UriSource=New-Object System.Uri($path)\n" +
+            "        $bitmap.EndInit()\n" +
+            "        $bitmap.Freeze()\n" +
+            "        [System.Windows.Clipboard]::SetImage($bitmap)\n" +
+            "        $ok=$true\n" +
+            "      }catch{\n" +
+            "        $err=$_.Exception.Message\n" +
+            "        Start-Sleep -Milliseconds 120\n" +
+            "      }\n" +
+            "    }\n" +
+            "  }catch{ if($err -eq ''){$err=$_.Exception.Message} }\n" +
+            "}\n" +
+            "if($ok){ Write-Output 'OK' } else { if($err -eq ''){$err='Clipboard image write failed'}; Write-Output ('ERR:' + $err) }\n";
 
-        var cmd = "powershell -NoProfile -STA -ExecutionPolicy Bypass -Command \"" + ps + "\"";
-        var out = system.callSystem(cmd);
+        var out = runPowerShellWindows(ps);
 
         if (out && out.indexOf("OK") !== -1) {
             return { ok: true, message: "" };
@@ -248,33 +320,106 @@
     function getClipboardImageWindows(filePath) {
         var p = psQuote(filePath);
         var ps =
-            "$ErrorActionPreference='Stop';" +
-            "Add-Type -AssemblyName System.Windows.Forms;" +
-            "Add-Type -AssemblyName System.Drawing;" +
-            "$outPath='" + p + "';" +
-            "$saved=$false;" +
-            "for($i=0;$i -lt 10 -and -not $saved;$i++){" +
-            "try{" +
-            "$data=[System.Windows.Forms.Clipboard]::GetDataObject();" +
-            "if([System.Windows.Forms.Clipboard]::ContainsImage()){" +
-            "$img=[System.Windows.Forms.Clipboard]::GetImage();" +
-            "if($img -ne $null){$img.Save($outPath,[System.Drawing.Imaging.ImageFormat]::Png);$img.Dispose();$saved=$true}" +
-            "};" +
-            "if(-not $saved -and $data -ne $null -and $data.GetDataPresent('PNG')){" +
-            "$png=$data.GetData('PNG');" +
-            "if($png -is [System.IO.MemoryStream]){[System.IO.File]::WriteAllBytes($outPath,$png.ToArray());$png.Dispose();$saved=$true}" +
-            "elseif($png -is [byte[]]){[System.IO.File]::WriteAllBytes($outPath,$png);$saved=$true}" +
-            "};" +
-            "if(-not $saved -and $data -ne $null -and $data.GetDataPresent([System.Windows.Forms.DataFormats]::FileDrop)){" +
-            "$files=$data.GetData([System.Windows.Forms.DataFormats]::FileDrop);" +
-            "if($files -ne $null){foreach($f in $files){if([System.IO.File]::Exists($f)){try{$img2=[System.Drawing.Image]::FromFile($f);$img2.Save($outPath,[System.Drawing.Imaging.ImageFormat]::Png);$img2.Dispose();$saved=$true;break}catch{}}}}" +
-            "};" +
-            "}catch{Start-Sleep -Milliseconds 120}" +
-            "};" +
-            "if($saved){Write-Output 'OK'}else{Write-Output 'NO_IMAGE'}";
+            "$ErrorActionPreference='Stop'\n" +
+            "$outPath='" + p + "'\n" +
+            "$saved=$false\n" +
+            "$err=''\n" +
+            "function Save-PngStream($stream, $path){\n" +
+            "  if($stream -eq $null){ return $false }\n" +
+            "  $fs=[System.IO.File]::Open($path,[System.IO.FileMode]::Create,[System.IO.FileAccess]::Write)\n" +
+            "  try{ $stream.Position=0 }catch{}\n" +
+            "  $stream.CopyTo($fs)\n" +
+            "  $fs.Dispose()\n" +
+            "  try{ $stream.Dispose() }catch{}\n" +
+            "  return $true\n" +
+            "}\n" +
+            "try{\n" +
+            "  Add-Type -AssemblyName System.Windows.Forms | Out-Null\n" +
+            "  Add-Type -AssemblyName System.Drawing | Out-Null\n" +
+            "  for($i=0;$i -lt 14 -and -not $saved;$i++){\n" +
+            "    try{\n" +
+            "      if([System.Windows.Forms.Clipboard]::ContainsImage()){\n" +
+            "        $img=[System.Windows.Forms.Clipboard]::GetImage()\n" +
+            "        if($img -ne $null){\n" +
+            "          $img.Save($outPath,[System.Drawing.Imaging.ImageFormat]::Png)\n" +
+            "          $img.Dispose()\n" +
+            "          $saved=$true\n" +
+            "          break\n" +
+            "        }\n" +
+            "      }\n" +
+            "      $data=[System.Windows.Forms.Clipboard]::GetDataObject()\n" +
+            "      if($data -ne $null -and -not $saved){\n" +
+            "        $formats=$data.GetFormats()\n" +
+            "        foreach($fmt in $formats){\n" +
+            "          if($fmt -match 'PNG'){\n" +
+            "            $png=$data.GetData($fmt)\n" +
+            "            if($png -is [System.IO.Stream]){\n" +
+            "              if(Save-PngStream $png $outPath){ $saved=$true; break }\n" +
+            "            }elseif($png -is [byte[]]){\n" +
+            "              [System.IO.File]::WriteAllBytes($outPath,$png)\n" +
+            "              $saved=$true\n" +
+            "              break\n" +
+            "            }\n" +
+            "          }\n" +
+            "        }\n" +
+            "      }\n" +
+            "      if($data -ne $null -and -not $saved -and $data.GetDataPresent([System.Windows.Forms.DataFormats]::Bitmap)){\n" +
+            "        $bmp=$data.GetData([System.Windows.Forms.DataFormats]::Bitmap)\n" +
+            "        if($bmp -is [System.Drawing.Image]){\n" +
+            "          $bmp.Save($outPath,[System.Drawing.Imaging.ImageFormat]::Png)\n" +
+            "          $bmp.Dispose()\n" +
+            "          $saved=$true\n" +
+            "          break\n" +
+            "        }\n" +
+            "      }\n" +
+            "      if($data -ne $null -and -not $saved -and $data.GetDataPresent([System.Windows.Forms.DataFormats]::FileDrop)){\n" +
+            "        $files=$data.GetData([System.Windows.Forms.DataFormats]::FileDrop)\n" +
+            "        if($files -ne $null){\n" +
+            "          foreach($f in $files){\n" +
+            "            if([System.IO.File]::Exists($f)){\n" +
+            "              try{\n" +
+            "                $img2=[System.Drawing.Image]::FromFile($f)\n" +
+            "                $img2.Save($outPath,[System.Drawing.Imaging.ImageFormat]::Png)\n" +
+            "                $img2.Dispose()\n" +
+            "                $saved=$true\n" +
+            "                break\n" +
+            "              }catch{}\n" +
+            "            }\n" +
+            "          }\n" +
+            "        }\n" +
+            "      }\n" +
+            "    }catch{\n" +
+            "      $err=$_.Exception.Message\n" +
+            "      Start-Sleep -Milliseconds 120\n" +
+            "    }\n" +
+            "  }\n" +
+            "}catch{ if($err -eq ''){$err=$_.Exception.Message} }\n" +
+            "if(-not $saved){\n" +
+            "  try{\n" +
+            "    Add-Type -AssemblyName PresentationCore | Out-Null\n" +
+            "    Add-Type -AssemblyName WindowsBase | Out-Null\n" +
+            "    for($i=0;$i -lt 10 -and -not $saved;$i++){\n" +
+            "      try{\n" +
+            "        $src=[System.Windows.Clipboard]::GetImage()\n" +
+            "        if($src -ne $null){\n" +
+            "          $encoder=New-Object System.Windows.Media.Imaging.PngBitmapEncoder\n" +
+            "          $encoder.Frames.Add([System.Windows.Media.Imaging.BitmapFrame]::Create($src))\n" +
+            "          $fs=[System.IO.File]::Open($outPath,[System.IO.FileMode]::Create,[System.IO.FileAccess]::Write)\n" +
+            "          $encoder.Save($fs)\n" +
+            "          $fs.Dispose()\n" +
+            "          $saved=$true\n" +
+            "          break\n" +
+            "        }\n" +
+            "      }catch{\n" +
+            "        $err=$_.Exception.Message\n" +
+            "        Start-Sleep -Milliseconds 120\n" +
+            "      }\n" +
+            "    }\n" +
+            "  }catch{ if($err -eq ''){$err=$_.Exception.Message} }\n" +
+            "}\n" +
+            "if($saved){ Write-Output 'OK' } elseif($err -ne ''){ Write-Output ('ERR:' + $err) } else { Write-Output 'NO_IMAGE' }\n";
 
-        var cmd = "powershell -NoProfile -STA -ExecutionPolicy Bypass -Command \"" + ps + "\"";
-        var out = system.callSystem(cmd);
+        var out = runPowerShellWindows(ps);
 
         if (out && out.indexOf("OK") !== -1) {
             return { ok: true, noImage: false, message: "" };
@@ -283,7 +428,7 @@
             return { ok: false, noImage: true, message: "Clipboard does not contain an image." };
         }
 
-        return { ok: false, noImage: false, message: out || "Unknown clipboard error." };
+        return { ok: false, noImage: false, message: out || "Clipboard read failed." };
     }
 
     function convertToPngMac(inputPath, outputPath) {
