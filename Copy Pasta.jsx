@@ -3,16 +3,14 @@
 
 (function CopyPastaPanel(thisObj) {
     var SCRIPT_NAME = "Copy Pasta";
-    var SCRIPT_VERSION = "1.8";
+    var SCRIPT_VERSION = "1.9";
     var TEMP_FOLDER_NAME = "CopyPastaTemp";
     var IMPORT_FOLDER_NAME = "CopyPasta Imports";
     var WINDOWS_HELPER_EXE_NAME = "copy_pasta_clipboard_helper.exe";
     var WINDOWS_HELPER_SRC_NAME = "copy_pasta_clipboard_helper.cs";
     var THEME = {
-        bg: [0.08, 0.1, 0.14, 1.0],
-        surface: [0.12, 0.16, 0.21, 1.0],
-        accent: [0.2, 0.67, 0.96, 1.0],
         textMain: [0.93, 0.95, 0.98, 1.0],
+        textAccent: [0.4, 0.78, 0.99, 1.0],
         textMuted: [0.66, 0.72, 0.79, 1.0],
         statusOk: [0.47, 0.83, 0.98, 1.0],
         statusError: [1.0, 0.45, 0.45, 1.0]
@@ -608,31 +606,44 @@
         return !str || str.replace(/\s+/g, "") === "";
     }
 
-    function getUIFont(style, size) {
-        var font = null;
-
-        try { font = ScriptUI.newFont("Poppins", style, size); } catch (e1) {}
-        if (!font) {
-            try { font = ScriptUI.newFont("Segoe UI", style, size); } catch (e2) {}
+    function tryUIFont(name, style, size) {
+        try {
+            return ScriptUI.newFont(name, style, size);
+        } catch (e) {
+            return null;
         }
-        if (!font) {
-            try { font = ScriptUI.newFont("Arial", style, size); } catch (e3) {}
+    }
+
+    function getUIFont(weight, size) {
+        var isBold = String(weight).toUpperCase() === "BOLD";
+        var targetStyle = isBold ? "Bold" : "Regular";
+        var styles = [targetStyle, targetStyle.toUpperCase(), "REGULAR"];
+        var names = [
+            "Poppins " + targetStyle,
+            "Poppins-" + targetStyle,
+            "Poppins",
+            "Segoe UI",
+            "Arial"
+        ];
+
+        var i;
+        var j;
+        var font;
+
+        for (i = 0; i < names.length; i++) {
+            for (j = 0; j < styles.length; j++) {
+                font = tryUIFont(names[i], styles[j], size);
+                if (font) return font;
+            }
         }
 
-        return font;
+        return null;
     }
 
     function setTextColor(control, rgba) {
         try {
             var g = control.graphics;
             g.foregroundColor = g.newPen(g.PenType.SOLID_COLOR, rgba, 1);
-        } catch (e) {}
-    }
-
-    function setBackgroundColor(control, rgba) {
-        try {
-            var g = control.graphics;
-            g.backgroundColor = g.newBrush(g.BrushType.SOLID_COLOR, rgba);
         } catch (e) {}
     }
 
@@ -1396,7 +1407,7 @@
     }
 
     function applyWindowStyle(win) {
-        setBackgroundColor(win, THEME.bg);
+        return;
     }
 
     function buildUI(thisObj) {
@@ -1408,16 +1419,10 @@
 
         pal.orientation = "column";
         pal.alignChildren = ["fill", "top"];
-        pal.spacing = 12;
+        pal.spacing = 10;
         pal.margins = 16;
 
         applyWindowStyle(pal);
-
-        var accentBar = pal.add("panel", undefined, "");
-        accentBar.alignment = ["fill", "top"];
-        accentBar.preferredSize = [-1, 3];
-        accentBar.margins = [0, 0, 0, 0];
-        setBackgroundColor(accentBar, THEME.accent);
 
         var buttonGroup = pal.add("group");
         buttonGroup.orientation = "column";
@@ -1436,13 +1441,12 @@
         var pasteFont = getUIFont("REGULAR", 20);
         try { if (copyFont) copyBtn.graphics.font = copyFont; } catch (e1) {}
         try { if (pasteFont) pasteBtn.graphics.font = pasteFont; } catch (e2) {}
-        setTextColor(copyBtn, THEME.textMain);
+        setTextColor(copyBtn, THEME.textAccent);
         setTextColor(pasteBtn, THEME.textMain);
 
         var statusPanel = pal.add("panel", undefined, "");
         statusPanel.alignment = ["fill", "top"];
         statusPanel.margins = [10, 10, 10, 10];
-        setBackgroundColor(statusPanel, THEME.surface);
 
         var statusText = statusPanel.add("statictext", undefined, "Ready (v" + SCRIPT_VERSION + ").");
         statusText.alignment = ["fill", "top"];
