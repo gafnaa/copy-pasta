@@ -1406,6 +1406,15 @@
         statusText.justify = "center";
         try { statusText.graphics.font = ScriptUI.newFont("Segoe UI", "REGULAR", 11); } catch (e2) {}
 
+        var tagText = pal.add("statictext", undefined, "@g.fnaa");
+        tagText.alignment = ["fill", "top"];
+        tagText.justify = "center";
+        try {
+            tagText.graphics.font = ScriptUI.newFont("Segoe UI", "REGULAR", 10);
+            var tg = tagText.graphics;
+            tg.foregroundColor = tg.newPen(tg.PenType.SOLID_COLOR, [0.65, 0.65, 0.65, 1.0], 1);
+        } catch (e3) {}
+
         copyBtn.onClick = function () {
             doCopy(statusText);
         };
