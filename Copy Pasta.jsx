@@ -3,11 +3,20 @@
 
 (function CopyPastaPanel(thisObj) {
     var SCRIPT_NAME = "Copy Pasta";
-    var SCRIPT_VERSION = "1.7";
+    var SCRIPT_VERSION = "1.8";
     var TEMP_FOLDER_NAME = "CopyPastaTemp";
     var IMPORT_FOLDER_NAME = "CopyPasta Imports";
     var WINDOWS_HELPER_EXE_NAME = "copy_pasta_clipboard_helper.exe";
     var WINDOWS_HELPER_SRC_NAME = "copy_pasta_clipboard_helper.cs";
+    var THEME = {
+        bg: [0.08, 0.1, 0.14, 1.0],
+        surface: [0.12, 0.16, 0.21, 1.0],
+        accent: [0.2, 0.67, 0.96, 1.0],
+        textMain: [0.93, 0.95, 0.98, 1.0],
+        textMuted: [0.66, 0.72, 0.79, 1.0],
+        statusOk: [0.47, 0.83, 0.98, 1.0],
+        statusError: [1.0, 0.45, 0.45, 1.0]
+    };
 
     function isWindows() {
         return $.os && $.os.toLowerCase().indexOf("windows") !== -1;
@@ -597,6 +606,34 @@
 
     function isBlankText(str) {
         return !str || str.replace(/\s+/g, "") === "";
+    }
+
+    function getUIFont(style, size) {
+        var font = null;
+
+        try { font = ScriptUI.newFont("Poppins", style, size); } catch (e1) {}
+        if (!font) {
+            try { font = ScriptUI.newFont("Segoe UI", style, size); } catch (e2) {}
+        }
+        if (!font) {
+            try { font = ScriptUI.newFont("Arial", style, size); } catch (e3) {}
+        }
+
+        return font;
+    }
+
+    function setTextColor(control, rgba) {
+        try {
+            var g = control.graphics;
+            g.foregroundColor = g.newPen(g.PenType.SOLID_COLOR, rgba, 1);
+        } catch (e) {}
+    }
+
+    function setBackgroundColor(control, rgba) {
+        try {
+            var g = control.graphics;
+            g.backgroundColor = g.newBrush(g.BrushType.SOLID_COLOR, rgba);
+        } catch (e) {}
     }
 
     function isShapeLayer(layer) {
@@ -1248,7 +1285,7 @@
         statusText.text = message;
         try {
             var g = statusText.graphics;
-            var color = isError ? [1.0, 0.35, 0.35, 1.0] : [0.65, 0.9, 0.65, 1.0];
+            var color = isError ? THEME.statusError : THEME.statusOk;
             g.foregroundColor = g.newPen(g.PenType.SOLID_COLOR, color, 1);
         } catch (e) {}
     }
@@ -1359,10 +1396,7 @@
     }
 
     function applyWindowStyle(win) {
-        try {
-            var g = win.graphics;
-            g.backgroundColor = g.newBrush(g.BrushType.SOLID_COLOR, [0.12, 0.12, 0.12, 1.0]);
-        } catch (e) {}
+        setBackgroundColor(win, THEME.bg);
     }
 
     function buildUI(thisObj) {
@@ -1374,10 +1408,16 @@
 
         pal.orientation = "column";
         pal.alignChildren = ["fill", "top"];
-        pal.spacing = 10;
+        pal.spacing = 12;
         pal.margins = 16;
 
         applyWindowStyle(pal);
+
+        var accentBar = pal.add("panel", undefined, "");
+        accentBar.alignment = ["fill", "top"];
+        accentBar.preferredSize = [-1, 3];
+        accentBar.margins = [0, 0, 0, 0];
+        setBackgroundColor(accentBar, THEME.accent);
 
         var buttonGroup = pal.add("group");
         buttonGroup.orientation = "column";
@@ -1392,28 +1432,35 @@
         pasteBtn.preferredSize = [280, 48];
         pasteBtn.helpTip = "Paste clipboard image into active composition.";
 
-        try {
-            copyBtn.graphics.font = ScriptUI.newFont("Segoe UI", "BOLD", 16);
-            pasteBtn.graphics.font = ScriptUI.newFont("Segoe UI", "BOLD", 16);
-        } catch (e1) {}
+        var copyFont = getUIFont("BOLD", 20);
+        var pasteFont = getUIFont("REGULAR", 20);
+        try { if (copyFont) copyBtn.graphics.font = copyFont; } catch (e1) {}
+        try { if (pasteFont) pasteBtn.graphics.font = pasteFont; } catch (e2) {}
+        setTextColor(copyBtn, THEME.textMain);
+        setTextColor(pasteBtn, THEME.textMain);
 
         var statusPanel = pal.add("panel", undefined, "");
         statusPanel.alignment = ["fill", "top"];
-        statusPanel.margins = [8, 8, 8, 8];
+        statusPanel.margins = [10, 10, 10, 10];
+        setBackgroundColor(statusPanel, THEME.surface);
 
         var statusText = statusPanel.add("statictext", undefined, "Ready (v" + SCRIPT_VERSION + ").");
         statusText.alignment = ["fill", "top"];
         statusText.justify = "center";
-        try { statusText.graphics.font = ScriptUI.newFont("Segoe UI", "REGULAR", 11); } catch (e2) {}
+        try {
+            var statusFont = getUIFont("REGULAR", 11);
+            if (statusFont) statusText.graphics.font = statusFont;
+        } catch (e3) {}
+        setTextColor(statusText, THEME.textMuted);
 
         var tagText = pal.add("statictext", undefined, "@g.fnaa");
         tagText.alignment = ["fill", "top"];
         tagText.justify = "center";
         try {
-            tagText.graphics.font = ScriptUI.newFont("Segoe UI", "REGULAR", 10);
-            var tg = tagText.graphics;
-            tg.foregroundColor = tg.newPen(tg.PenType.SOLID_COLOR, [0.65, 0.65, 0.65, 1.0], 1);
-        } catch (e3) {}
+            var tagFont = getUIFont("REGULAR", 10);
+            if (tagFont) tagText.graphics.font = tagFont;
+        } catch (e4) {}
+        setTextColor(tagText, [0.56, 0.76, 0.9, 1.0]);
 
         copyBtn.onClick = function () {
             doCopy(statusText);
