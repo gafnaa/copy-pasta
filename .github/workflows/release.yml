@@ -1,0 +1,73 @@
+name: Auto Release
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve tag and release metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VERSION="$(python3 -c "import re, pathlib; t=pathlib.Path('Copy Pasta.jsx').read_text(encoding='utf-8', errors='ignore'); m=re.search(r'var\\s+SCRIPT_VERSION\\s*=\\s*\"([^\"]+)\"', t); print(m.group(1) if m else '0.0.0')")"
+
+          SAFE_VERSION="${VERSION// /-}"
+          TAG="v${SAFE_VERSION}-build.${GITHUB_RUN_NUMBER}"
+          RELEASE_NAME="Copy Pasta ${SAFE_VERSION} (build ${GITHUB_RUN_NUMBER})"
+
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "release_name=${RELEASE_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Package release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp "Copy Pasta.jsx" "dist/Copy_Pasta.jsx"
+          cp "README.md" "dist/README.md"
+          zip -j "dist/copy-pasta-${{ steps.meta.outputs.tag }}.zip" "Copy Pasta.jsx" "README.md"
+
+      - name: Ensure tag exists on remote
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.meta.outputs.tag }}"
+
+          git fetch --tags --force
+
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "Tag ${TAG} already exists on remote."
+          else
+            git tag "${TAG}" "${GITHUB_SHA}"
+            git push origin "refs/tags/${TAG}"
+          fi
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: ${{ steps.meta.outputs.release_name }}
+          generate_release_notes: true
+          overwrite_files: true
+          files: |
+            dist/copy-pasta-${{ steps.meta.outputs.tag }}.zip
+            dist/Copy_Pasta.jsx
+            dist/README.md
