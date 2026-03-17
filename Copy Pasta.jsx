@@ -3,9 +3,11 @@
 
 (function CopyPastaPanel(thisObj) {
     var SCRIPT_NAME = "Copy Pasta";
-    var SCRIPT_VERSION = "1.6";
+    var SCRIPT_VERSION = "1.7";
     var TEMP_FOLDER_NAME = "CopyPastaTemp";
     var IMPORT_FOLDER_NAME = "CopyPasta Imports";
+    var WINDOWS_HELPER_EXE_NAME = "copy_pasta_clipboard_helper.exe";
+    var WINDOWS_HELPER_SRC_NAME = "copy_pasta_clipboard_helper.cs";
 
     function isWindows() {
         return $.os && $.os.toLowerCase().indexOf("windows") !== -1;
@@ -88,6 +90,466 @@
                 if (tempScript && tempScript.exists) tempScript.remove();
             } catch (cleanupErr) {}
         }
+    }
+
+    function getWindowsHelperFolder() {
+        return ensureFolder(new Folder(Folder.userData.fsName + "/CopyPastaHelper"));
+    }
+
+    function getWindowsHelperExe() {
+        return new File(getWindowsHelperFolder().fsName + "/" + WINDOWS_HELPER_EXE_NAME);
+    }
+
+    function getWindowsHelperSource() {
+        return new File(getWindowsHelperFolder().fsName + "/" + WINDOWS_HELPER_SRC_NAME);
+    }
+
+    function getWindowsCscCandidates() {
+        var winDir = $.getenv("WINDIR") || $.getenv("SystemRoot") || "C:/Windows";
+        return [
+            new File(winDir + "/Microsoft.NET/Framework64/v4.0.30319/csc.exe"),
+            new File(winDir + "/Microsoft.NET/Framework/v4.0.30319/csc.exe")
+        ];
+    }
+
+    function buildWindowsClipboardHelperSource() {
+        return [
+            "using System;",
+            "using System.Drawing;",
+            "using System.Drawing.Imaging;",
+            "using System.IO;",
+            "using System.Net;",
+            "using System.Text;",
+            "using System.Text.RegularExpressions;",
+            "using System.Threading;",
+            "using System.Windows.Forms;",
+            "",
+            "namespace CopyPastaClipboardHelper",
+            "{",
+            "    internal static class Program",
+            "    {",
+            "        [STAThread]",
+            "        private static int Main(string[] args)",
+            "        {",
+            "            if (args == null || args.Length < 3)",
+            "            {",
+            "                return WriteResult(null, \"ERR:Arguments expected: <set|get> <imagePath> <resultPath>\");",
+            "            }",
+            "",
+            "            string mode = (args[0] ?? \"\").Trim().ToLowerInvariant();",
+            "            string imagePath = args[1] ?? \"\";",
+            "            string resultPath = args[2] ?? \"\";",
+            "",
+            "            try",
+            "            {",
+            "                if (mode == \"set\")",
+            "                {",
+            "                    return SetClipboardImage(imagePath, resultPath);",
+            "                }",
+            "",
+            "                if (mode == \"get\")",
+            "                {",
+            "                    return GetClipboardImage(imagePath, resultPath);",
+            "                }",
+            "",
+            "                return WriteResult(resultPath, \"ERR:Unknown mode\");",
+            "            }",
+            "            catch (Exception ex)",
+            "            {",
+            "                return WriteResult(resultPath, \"ERR:\" + ex.Message);",
+            "            }",
+            "        }",
+            "",
+            "        private static int SetClipboardImage(string imagePath, string resultPath)",
+            "        {",
+            "            if (!File.Exists(imagePath))",
+            "            {",
+            "                return WriteResult(resultPath, \"ERR:Input image file not found\");",
+            "            }",
+            "",
+            "            Exception last = null;",
+            "            for (int i = 0; i < 15; i++)",
+            "            {",
+            "                try",
+            "                {",
+            "                    using (Image img = Image.FromFile(imagePath))",
+            "                    using (Bitmap bmp = new Bitmap(img))",
+            "                    {",
+            "                        Clipboard.SetImage(bmp);",
+            "                    }",
+            "",
+            "                    return WriteResult(resultPath, \"OK\");",
+            "                }",
+            "                catch (Exception ex)",
+            "                {",
+            "                    last = ex;",
+            "                    Thread.Sleep(120);",
+            "                }",
+            "            }",
+            "",
+            "            return WriteResult(resultPath, \"ERR:\" + (last != null ? last.Message : \"Clipboard write failed\"));",
+            "        }",
+            "",
+            "        private static int GetClipboardImage(string outputPath, string resultPath)",
+            "        {",
+            "            Exception last = null;",
+            "            for (int i = 0; i < 15; i++)",
+            "            {",
+            "                try",
+            "                {",
+            "                    if (TrySaveClipboardImage(outputPath))",
+            "                    {",
+            "                        return WriteResult(resultPath, \"OK\");",
+            "                    }",
+            "                }",
+            "                catch (Exception ex)",
+            "                {",
+            "                    last = ex;",
+            "                }",
+            "",
+            "                Thread.Sleep(120);",
+            "            }",
+            "",
+            "            string formats = GetClipboardFormats();",
+            "            if (!string.IsNullOrEmpty(formats))",
+            "            {",
+            "                return WriteResult(resultPath, \"NO_IMAGE:\" + formats);",
+            "            }",
+            "",
+            "            if (last != null)",
+            "            {",
+            "                return WriteResult(resultPath, \"ERR:\" + last.Message);",
+            "            }",
+            "",
+            "            return WriteResult(resultPath, \"NO_IMAGE\");",
+            "        }",
+            "",
+            "        private static bool TrySaveClipboardImage(string outputPath)",
+            "        {",
+            "            if (Clipboard.ContainsImage())",
+            "            {",
+            "                using (Image img = Clipboard.GetImage())",
+            "                {",
+            "                    if (img != null)",
+            "                    {",
+            "                        using (Bitmap bmp = new Bitmap(img))",
+            "                        {",
+            "                            bmp.Save(outputPath, ImageFormat.Png);",
+            "                        }",
+            "                        return true;",
+            "                    }",
+            "                }",
+            "            }",
+            "",
+            "            IDataObject data = Clipboard.GetDataObject();",
+            "            if (data == null)",
+            "            {",
+            "                return false;",
+            "            }",
+            "",
+            "            if (data.GetDataPresent(DataFormats.Bitmap))",
+            "            {",
+            "                object b = data.GetData(DataFormats.Bitmap);",
+            "                if (b is Image)",
+            "                {",
+            "                    using (Bitmap bmp = new Bitmap((Image)b))",
+            "                    {",
+            "                        bmp.Save(outputPath, ImageFormat.Png);",
+            "                    }",
+            "                    return true;",
+            "                }",
+            "            }",
+            "",
+            "            string[] fmts = data.GetFormats();",
+            "            if (fmts != null)",
+            "            {",
+            "                foreach (string fmt in fmts)",
+            "                {",
+            "                    if (fmt == null) continue;",
+            "                    if (fmt.IndexOf(\"PNG\", StringComparison.OrdinalIgnoreCase) < 0) continue;",
+            "",
+            "                    object png = data.GetData(fmt);",
+            "                    if (png is MemoryStream)",
+            "                    {",
+            "                        using (MemoryStream ms = (MemoryStream)png)",
+            "                        {",
+            "                            if (SaveStreamToFile(ms, outputPath)) return true;",
+            "                        }",
+            "                    }",
+            "                    else if (png is byte[])",
+            "                    {",
+            "                        File.WriteAllBytes(outputPath, (byte[])png);",
+            "                        return true;",
+            "                    }",
+            "                    else if (png is Stream)",
+            "                    {",
+            "                        using (Stream s = (Stream)png)",
+            "                        {",
+            "                            if (SaveStreamToFile(s, outputPath)) return true;",
+            "                        }",
+            "                    }",
+            "                }",
+            "            }",
+            "",
+            "            if (data.GetDataPresent(DataFormats.FileDrop))",
+            "            {",
+            "                string[] files = data.GetData(DataFormats.FileDrop) as string[];",
+            "                if (files != null)",
+            "                {",
+            "                    foreach (string f in files)",
+            "                    {",
+            "                        if (string.IsNullOrEmpty(f) || !File.Exists(f)) continue;",
+            "                        try",
+            "                        {",
+            "                            using (Image img2 = Image.FromFile(f))",
+            "                            using (Bitmap bmp2 = new Bitmap(img2))",
+            "                            {",
+            "                                bmp2.Save(outputPath, ImageFormat.Png);",
+            "                            }",
+            "                            return true;",
+            "                        }",
+            "                        catch { }",
+            "                    }",
+            "                }",
+            "            }",
+            "",
+            "            string url = ExtractImageUrlFromData(data);",
+            "            if (!string.IsNullOrEmpty(url))",
+            "            {",
+            "                if (TryDownloadImageAsPng(url, outputPath))",
+            "                {",
+            "                    return true;",
+            "                }",
+            "            }",
+            "",
+            "            return false;",
+            "        }",
+            "",
+            "        private static bool SaveStreamToFile(Stream stream, string path)",
+            "        {",
+            "            if (stream == null) return false;",
+            "            using (FileStream fs = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.Read))",
+            "            {",
+            "                try { if (stream.CanSeek) stream.Position = 0; } catch { }",
+            "                stream.CopyTo(fs);",
+            "            }",
+            "            return true;",
+            "        }",
+            "",
+            "        private static string ExtractImageUrlFromData(IDataObject data)",
+            "        {",
+            "            string html = null;",
+            "            string text = null;",
+            "",
+            "            try { if (data.GetDataPresent(\"HTML Format\")) html = data.GetData(\"HTML Format\") as string; } catch { }",
+            "            try { if (string.IsNullOrEmpty(text) && data.GetDataPresent(DataFormats.UnicodeText)) text = data.GetData(DataFormats.UnicodeText) as string; } catch { }",
+            "            try { if (string.IsNullOrEmpty(text) && data.GetDataPresent(DataFormats.Text)) text = data.GetData(DataFormats.Text) as string; } catch { }",
+            "",
+            "            string fromHtml = ExtractUrl(html);",
+            "            if (!string.IsNullOrEmpty(fromHtml)) return fromHtml;",
+            "",
+            "            string fromText = ExtractUrl(text);",
+            "            if (!string.IsNullOrEmpty(fromText)) return fromText;",
+            "",
+            "            try",
+            "            {",
+            "                string clipText = Clipboard.GetText(TextDataFormat.UnicodeText);",
+            "                string fromClip = ExtractUrl(clipText);",
+            "                if (!string.IsNullOrEmpty(fromClip)) return fromClip;",
+            "            }",
+            "            catch { }",
+            "",
+            "            return null;",
+            "        }",
+            "",
+            "        private static string ExtractUrl(string text)",
+            "        {",
+            "            if (string.IsNullOrEmpty(text)) return null;",
+            "            Match m = Regex.Match(text, @\"https?://[^\\s\"\"'<>]+\", RegexOptions.IgnoreCase);",
+            "            if (!m.Success) return null;",
+            "            return m.Value.Replace(\"&amp;\", \"&\");",
+            "        }",
+            "",
+            "        private static bool TryDownloadImageAsPng(string url, string outputPath)",
+            "        {",
+            "            try",
+            "            {",
+            "                try",
+            "                {",
+            "                    ServicePointManager.SecurityProtocol =",
+            "                        SecurityProtocolType.Tls12 |",
+            "                        SecurityProtocolType.Tls11 |",
+            "                        SecurityProtocolType.Tls;",
+            "                }",
+            "                catch { }",
+            "",
+            "                using (WebClient wc = new WebClient())",
+            "                {",
+            "                    wc.Headers.Add(\"User-Agent\", \"CopyPastaHelper/1.0\");",
+            "                    byte[] bytes = wc.DownloadData(url);",
+            "                    using (MemoryStream ms = new MemoryStream(bytes))",
+            "                    using (Image img = Image.FromStream(ms))",
+            "                    using (Bitmap bmp = new Bitmap(img))",
+            "                    {",
+            "                        bmp.Save(outputPath, ImageFormat.Png);",
+            "                        return true;",
+            "                    }",
+            "                }",
+            "            }",
+            "            catch",
+            "            {",
+            "                return false;",
+            "            }",
+            "        }",
+            "",
+            "        private static string GetClipboardFormats()",
+            "        {",
+            "            try",
+            "            {",
+            "                IDataObject data = Clipboard.GetDataObject();",
+            "                if (data == null) return null;",
+            "                string[] formats = data.GetFormats();",
+            "                if (formats == null || formats.Length == 0) return null;",
+            "                return string.Join(\", \", formats);",
+            "            }",
+            "            catch",
+            "            {",
+            "                return null;",
+            "            }",
+            "        }",
+            "",
+            "        private static int WriteResult(string resultPath, string text)",
+            "        {",
+            "            string msg = string.IsNullOrEmpty(text) ? \"ERR:Unknown helper error\" : text;",
+            "            try",
+            "            {",
+            "                if (!string.IsNullOrEmpty(resultPath))",
+            "                {",
+            "                    File.WriteAllText(resultPath, msg, Encoding.UTF8);",
+            "                }",
+            "            }",
+            "            catch { }",
+            "",
+            "            Console.WriteLine(msg);",
+            "            return msg.StartsWith(\"OK\", StringComparison.OrdinalIgnoreCase) ? 0 : 1;",
+            "        }",
+            "    }",
+            "}"
+        ].join("\r\n");
+    }
+
+    function ensureWindowsClipboardHelper() {
+        var exe = getWindowsHelperExe();
+        if (exe.exists) {
+            return { ok: true, file: exe, message: "" };
+        }
+
+        var src = getWindowsHelperSource();
+        try {
+            writeTextFile(src, buildWindowsClipboardHelperSource());
+        } catch (writeErr) {
+            return { ok: false, file: null, message: "Cannot write helper source: " + writeErr.toString() };
+        }
+
+        var candidates = getWindowsCscCandidates();
+        var csc = null;
+        var i;
+        for (i = 0; i < candidates.length; i++) {
+            if (candidates[i].exists) {
+                csc = candidates[i];
+                break;
+            }
+        }
+
+        if (!csc) {
+            return { ok: false, file: null, message: "C# compiler not found (csc.exe)." };
+        }
+
+        var compileCmd =
+            '"' + csc.fsName + '"' +
+            ' /nologo /target:exe' +
+            ' /out:"' + exe.fsName + '"' +
+            ' /reference:System.Windows.Forms.dll' +
+            ' /reference:System.Drawing.dll' +
+            ' "' + src.fsName + '"';
+
+        var compileOut = system.callSystem(compileCmd);
+        if (exe.exists) {
+            return { ok: true, file: exe, message: "" };
+        }
+
+        return {
+            ok: false,
+            file: null,
+            message: "Clipboard helper compile failed." + (compileOut ? (" " + compileOut.replace(/\r?\n/g, " ")) : "")
+        };
+    }
+
+    function runWindowsClipboardHelper(mode, imagePath) {
+        var helperInfo = ensureWindowsClipboardHelper();
+        if (!helperInfo.ok || !helperInfo.file) {
+            return { ok: false, noImage: false, unavailable: true, message: helperInfo.message || "Clipboard helper unavailable." };
+        }
+
+        var resultFile = uniqueFile(getTempFolder(), "copy_pasta_helper_result", "txt");
+        var cmd =
+            '"' + helperInfo.file.fsName + '"' +
+            ' "' + mode + '"' +
+            ' "' + imagePath + '"' +
+            ' "' + resultFile.fsName + '"';
+
+        var out = system.callSystem(cmd);
+        var status = readTextFile(resultFile);
+
+        try { if (resultFile.exists) resultFile.remove(); } catch (cleanupErr2) {}
+
+        if (isBlankText(status)) {
+            status = out;
+        }
+
+        if (!isBlankText(status)) {
+            status = status.replace(/^\uFEFF/, "");
+            status = status.replace(/\r?\n/g, " ");
+            status = status.replace(/^\s+|\s+$/g, "");
+        }
+
+        if (status && status.indexOf("OK") === 0) {
+            return { ok: true, noImage: false, unavailable: false, message: "" };
+        }
+
+        if (status && status.indexOf("NO_IMAGE:") === 0) {
+            return {
+                ok: false,
+                noImage: true,
+                unavailable: false,
+                message: "Clipboard does not contain a readable image format. Available formats: " + status.substring(9)
+            };
+        }
+
+        if (status && status.indexOf("NO_IMAGE") === 0) {
+            return {
+                ok: false,
+                noImage: true,
+                unavailable: false,
+                message: "Clipboard does not contain an image."
+            };
+        }
+
+        if (isBlankText(status)) {
+            return {
+                ok: false,
+                noImage: false,
+                unavailable: true,
+                message: "Clipboard helper returned no status."
+            };
+        }
+
+        return {
+            ok: false,
+            noImage: false,
+            unavailable: false,
+            message: status
+        };
     }
 
     function ensureFolder(folder) {
@@ -293,6 +755,13 @@
     }
 
     function setClipboardImageWindows(filePath) {
+        var helperResult = runWindowsClipboardHelper("set", filePath);
+        if (helperResult.ok) {
+            return { ok: true, message: "" };
+        }
+
+        var helperMessage = helperResult.message || "";
+
         var p = psQuote(filePath);
         var resultFile = uniqueFile(getTempFolder(), "copy_pasta_result_set", "txt");
         var r = psQuote(resultFile.fsName);
@@ -379,9 +848,17 @@
                 if (verify.ok) {
                     return { ok: true, message: "" };
                 }
-                return { ok: false, message: verify.message || "Clipboard verification failed." };
+                var verifyMessage = verify.message || "Clipboard verification failed.";
+                if (!isBlankText(helperMessage)) {
+                    verifyMessage = "Helper: " + helperMessage + " | " + verifyMessage;
+                }
+                return { ok: false, message: verifyMessage };
             } catch (verifyErr) {
-                return { ok: false, message: "No output from PowerShell and clipboard verification failed: " + verifyErr.toString() };
+                var noOutputMessage = "No output from PowerShell and clipboard verification failed: " + verifyErr.toString();
+                if (!isBlankText(helperMessage)) {
+                    noOutputMessage = "Helper: " + helperMessage + " | " + noOutputMessage;
+                }
+                return { ok: false, message: noOutputMessage };
             } finally {
                 try {
                     if (verifyFile && verifyFile.exists) verifyFile.remove();
@@ -389,10 +866,25 @@
             }
         }
 
-        return { ok: false, message: out || "Unknown clipboard error." };
+        var finalMessage = out || "Unknown clipboard error.";
+        if (!isBlankText(helperMessage)) {
+            finalMessage = "Helper: " + helperMessage + " | PowerShell: " + finalMessage;
+        }
+
+        return { ok: false, message: finalMessage };
     }
 
     function getClipboardImageWindows(filePath) {
+        var helperResult = runWindowsClipboardHelper("get", filePath);
+        if (helperResult.ok) {
+            return { ok: true, noImage: false, message: "" };
+        }
+        if (helperResult.noImage) {
+            return { ok: false, noImage: true, message: helperResult.message || "Clipboard does not contain an image." };
+        }
+
+        var helperMessage = helperResult.message || "";
+
         var p = psQuote(filePath);
         var resultFile = uniqueFile(getTempFolder(), "copy_pasta_result_get", "txt");
         var r = psQuote(resultFile.fsName);
@@ -589,10 +1081,19 @@
         }
 
         if (isBlankText(out)) {
-            return { ok: false, noImage: false, message: "PowerShell returned no status and no clipboard image file was created. PowerShell execution may be blocked by system policy." };
+            var noStatusMsg = "PowerShell returned no status and no clipboard image file was created. PowerShell execution may be blocked by system policy.";
+            if (!isBlankText(helperMessage)) {
+                noStatusMsg = "Helper: " + helperMessage + " | " + noStatusMsg;
+            }
+            return { ok: false, noImage: false, message: noStatusMsg };
         }
 
-        return { ok: false, noImage: false, message: out || "Clipboard read failed." };
+        var finalMessage = out || "Clipboard read failed.";
+        if (!isBlankText(helperMessage)) {
+            finalMessage = "Helper: " + helperMessage + " | PowerShell: " + finalMessage;
+        }
+
+        return { ok: false, noImage: false, message: finalMessage };
     }
 
     function convertToPngMac(inputPath, outputPath) {
