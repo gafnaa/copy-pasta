@@ -1,0 +1,141 @@
+name: Auto Generate PR Message (Gemini)
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+
+    permissions:
+      pull-requests: write
+      contents: read
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get diff
+        id: diff
+        run: |
+          git fetch origin ${{ github.base_ref }}
+          DIFF=$(git diff origin/${{ github.base_ref }}...HEAD | head -c 12000)
+          echo "DIFF<<EOF" >> $GITHUB_ENV
+          echo "$DIFF" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
+      - name: Generate PR message using Gemini
+        id: gemini
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          # Check if key is present
+          if [ -z "$GEMINI_API_KEY" ]; then
+            echo "::error::GEMINI_API_KEY secret is not set."
+            echo "RESULT=Error: GEMINI_API_KEY is missing." >> $GITHUB_ENV
+            exit 0
+          fi
+
+          if [ -z "$DIFF" ]; then
+            echo "::warning::Diff is empty. Skipping generation."
+            echo "RESULT=No changes detected in the diff." >> $GITHUB_ENV
+            exit 0
+          fi
+
+          # Construct the JSON payload safely using jq to handle escaping
+          # Save to a file to avoid command line length limits and shell quoting issues
+          jq -n \
+            --arg diff "$DIFF" \
+            '{contents:[{parts:[{text: ("You are a senior software engineer.\nReview the following code changes and generate a professional Pull Request description in Markdown format.\n" +
+            "The output MUST start with the Title on the first line, formatted as `Title: <type>: <Concise Title>`.\n" +
+            "Use Conventional Commit type prefix for `<type>` with one of: feat, fix, chore, docs, style, refactor, perf, test, build, ci, revert.\n" +
+            "Examples: `Title: feat: add event-based blog navigation`, `Title: chore: update workflow prompt`.\n" +
+            "Followed by a blank line, and then the detailed description body.\n\n" +
+            "Description Structure:\n" +
+            "1. **Summary**: A high-level overview.\n" +
+            "2. **Key Changes**: A bulleted list of technical changes.\n" +
+            "3. **Impact**: (Optional) Performance/UI/Breaking changes.\n\n" +
+            "Do NOT use conversational filler.\n" +
+            "Code Changes:\n" + $diff)}]}]}' > request.json
+
+          # Use gemini-2.5-flash as it is listed in available models
+          RESPONSE=$(curl -s \
+            -H "Content-Type: application/json" \
+            -X POST \
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=$GEMINI_API_KEY" \
+            -d @request.json)
+
+          # Check for errors in the response
+          if echo "$RESPONSE" | grep -q '"error":'; then
+            echo "::error::Gemini API returned an error:"
+            echo "$RESPONSE"
+            
+            echo "::group::Debugging - Listing Available Models"
+            curl -s "https://generativelanguage.googleapis.com/v1beta/models?key=$GEMINI_API_KEY" | jq -r '.models[] | .name + " " + (.supportedGenerationMethods | join(","))'
+            echo "::endgroup::"
+
+            echo "RESULT=Error: Gemini API call failed. Check logs for available models." >> $GITHUB_ENV
+            exit 0
+          fi
+
+          TEXT=$(echo "$RESPONSE" | jq -r '.candidates[0].content.parts[0].text')
+
+          if [ "$TEXT" == "null" ] || [ -z "$TEXT" ]; then
+             echo "::error::API response structure unexpected:"
+             echo "$RESPONSE"
+             echo "RESULT=Error: Generated message was empty." >> $GITHUB_ENV
+          else
+             echo "RESULT<<EOF" >> $GITHUB_ENV
+             echo "$TEXT" >> $GITHUB_ENV
+             echo "EOF" >> $GITHUB_ENV
+          fi
+
+      - name: Update Pull Request
+        uses: actions/github-script@v7
+        env:
+          RESULT: ${{ env.RESULT }}
+        with:
+          script: |
+            const result = process.env.RESULT || "Auto generated PR message failed.";
+            const lines = result.split("\n");
+            const conventionalTitleRegex = /^(feat|fix|chore|docs|style|refactor|perf|test|build|ci|revert)(\([^)]+\))?:\s+.+$/i;
+
+            let title = "";
+            let body = result;
+
+            // Access context to get current title if we fail to generate one, 
+            // but we usually want to overwrite or better yet, if the AI provided one, use it.
+
+            if (lines.length > 0 && lines[0].startsWith("Title: ")) {
+              title = lines[0].replace("Title: ", "").trim();
+              // Remove the title line and any immediate following blank lines for the body
+              body = lines.slice(1).join("\n").trim();
+            }
+
+            // Enforce Conventional Commit style title for PR title
+            if (title && !conventionalTitleRegex.test(title)) {
+              title = `chore: ${title.replace(/^:+\s*/, "").trim()}`;
+            }
+
+            // If Gemini didn't provide a title, normalize current PR title
+            if (!title) {
+              const currentTitle = (context.payload.pull_request?.title || "auto update").trim();
+              title = conventionalTitleRegex.test(currentTitle)
+                ? currentTitle
+                : `chore: ${currentTitle}`;
+            }
+
+            const updateParams = {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+              body: body
+            };
+
+            // Always update title to keep Conventional Commit format
+            updateParams.title = title;
+
+            await github.rest.pulls.update(updateParams);
