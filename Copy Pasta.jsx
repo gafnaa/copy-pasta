@@ -3,7 +3,7 @@
 
 (function CopyPastaPanel(thisObj) {
     var SCRIPT_NAME = "Copy Pasta";
-    var SCRIPT_VERSION = "1.14";
+    var SCRIPT_VERSION = "1.15";
     var TEMP_FOLDER_NAME = "CopyPastaTemp";
     var IMPORT_FOLDER_NAME = "CopyPasta Imports";
     var WINDOWS_HELPER_EXE_NAME = "copy_pasta_clipboard_helper.exe";
@@ -1491,9 +1491,9 @@
         if (!pal) return null;
 
         pal.orientation = "column";
-        pal.alignChildren = ["fill", "top"];
-        pal.spacing = 10;
-        pal.margins = 16;
+        pal.alignChildren = ["fill", "fill"];
+        pal.spacing = 0;
+        pal.margins = 0;
 
         var bgState = {
             color: [DEFAULT_BG_COLOR[0], DEFAULT_BG_COLOR[1], DEFAULT_BG_COLOR[2], 1.0],
@@ -1502,15 +1502,33 @@
             imagePath: ""
         };
 
-        applyWindowStyle(pal, bgState);
+        var rootStack = pal.add("group");
+        rootStack.orientation = "stack";
+        rootStack.alignChildren = ["fill", "fill"];
+        rootStack.alignment = ["fill", "fill"];
+        rootStack.spacing = 0;
+        rootStack.margins = 0;
+
+        var bgCanvas = rootStack.add("panel", undefined, "");
+        bgCanvas.alignment = ["fill", "fill"];
+        bgCanvas.margins = [0, 0, 0, 0];
+
+        var contentGroup = rootStack.add("group");
+        contentGroup.orientation = "column";
+        contentGroup.alignChildren = ["fill", "top"];
+        contentGroup.spacing = 10;
+        contentGroup.margins = 16;
+
+        applyWindowStyle(bgCanvas, bgState);
 
         function refreshBackground() {
-            try { pal.notify("onDraw"); } catch (e1) {}
-            try { pal.layout.layout(true); } catch (e2) {}
-            try { pal.layout.resize(); } catch (e3) {}
+            try { bgCanvas.notify("onDraw"); } catch (e1) {}
+            try { bgCanvas.visible = false; bgCanvas.visible = true; } catch (e2) {}
+            try { pal.layout.layout(true); } catch (e3) {}
+            try { pal.layout.resize(); } catch (e4) {}
         }
 
-        var buttonGroup = pal.add("group");
+        var buttonGroup = contentGroup.add("group");
         buttonGroup.orientation = "column";
         buttonGroup.alignChildren = ["fill", "top"];
         buttonGroup.spacing = 10;
@@ -1534,7 +1552,7 @@
         setTextColor(copyBtn, THEME.textAccent);
         setTextColor(pasteBtn, THEME.textMain);
 
-        var bgPanel = pal.add("panel", undefined, "Background");
+        var bgPanel = contentGroup.add("panel", undefined, "Background");
         bgPanel.alignment = ["fill", "top"];
         bgPanel.orientation = "column";
         bgPanel.alignChildren = ["fill", "top"];
@@ -1622,7 +1640,7 @@
 
         opacitySlider.onChange = opacitySlider.onChanging;
 
-        var statusPanel = pal.add("panel", undefined, "");
+        var statusPanel = contentGroup.add("panel", undefined, "");
         statusPanel.alignment = ["fill", "top"];
         statusPanel.margins = [10, 10, 10, 10];
 
@@ -1635,7 +1653,7 @@
         } catch (e3) {}
         setTextColor(statusText, THEME.textMuted);
 
-        var tagText = pal.add("statictext", undefined, "@g.fnaa");
+        var tagText = contentGroup.add("statictext", undefined, "@g.fnaa");
         tagText.alignment = ["fill", "top"];
         tagText.justify = "center";
         try {
@@ -1654,10 +1672,11 @@
 
         pal.onResizing = pal.onResize = function () {
             this.layout.resize();
+            refreshBackground();
         };
 
-        refreshBackground();
         pal.layout.layout(true);
+        refreshBackground();
         return pal;
     }
 
