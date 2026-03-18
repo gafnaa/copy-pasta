@@ -3,14 +3,16 @@
 
 (function CopyPastaPanel(thisObj) {
     var SCRIPT_NAME = "Copy Pasta";
-    var SCRIPT_VERSION = "1.15";
+    var SCRIPT_VERSION = "1.18";
     var TEMP_FOLDER_NAME = "CopyPastaTemp";
     var IMPORT_FOLDER_NAME = "CopyPasta Imports";
     var WINDOWS_HELPER_EXE_NAME = "copy_pasta_clipboard_helper.exe";
     var WINDOWS_HELPER_SRC_NAME = "copy_pasta_clipboard_helper.cs";
     var DEFAULT_BG_COLOR = [0.13, 0.13, 0.13, 1.0];
     var DEFAULT_BG_OPACITY = 90;
-    var UI_BUTTON_SIZE = [240, 40];
+    var UI_BUTTON_SIZE = [220, 34];
+    var UI_BUTTON_RADIUS = 15;
+    var DEFAULT_BUTTON_BG_OPACITY = 88;
     var THEME = {
         textMain: [0.93, 0.95, 0.98, 1.0],
         textAccent: [0.4, 0.78, 0.99, 1.0],
@@ -648,6 +650,191 @@
             var g = control.graphics;
             g.foregroundColor = g.newPen(g.PenType.SOLID_COLOR, rgba, 1);
         } catch (e) {}
+    }
+
+    function colorWithAlpha(rgb, opacityPercent) {
+        return [
+            clamp(rgb[0], 0, 1),
+            clamp(rgb[1], 0, 1),
+            clamp(rgb[2], 0, 1),
+            clamp(opacityPercent / 100, 0, 1)
+        ];
+    }
+
+    function offsetRgb(rgb, delta) {
+        return [
+            clamp(rgb[0] + delta, 0, 1),
+            clamp(rgb[1] + delta, 0, 1),
+            clamp(rgb[2] + delta, 0, 1)
+        ];
+    }
+
+    function fillRoundedRect(graphics, width, height, radius, rgba) {
+        var r = Math.floor(clamp(radius, 0, Math.min(width, height) / 2));
+        var d = r * 2;
+        var brush = graphics.newBrush(graphics.BrushType.SOLID_COLOR, rgba);
+
+        if (r <= 0) {
+            graphics.newPath();
+            graphics.rectPath(0, 0, width, height);
+            graphics.fillPath(brush);
+            return;
+        }
+
+        graphics.newPath();
+        graphics.rectPath(r, 0, width - d, height);
+        graphics.fillPath(brush);
+
+        graphics.newPath();
+        graphics.rectPath(0, r, width, height - d);
+        graphics.fillPath(brush);
+
+        graphics.newPath();
+        graphics.ellipsePath(0, 0, d, d);
+        graphics.fillPath(brush);
+
+        graphics.newPath();
+        graphics.ellipsePath(width - d, 0, d, d);
+        graphics.fillPath(brush);
+
+        graphics.newPath();
+        graphics.ellipsePath(0, height - d, d, d);
+        graphics.fillPath(brush);
+
+        graphics.newPath();
+        graphics.ellipsePath(width - d, height - d, d, d);
+        graphics.fillPath(brush);
+    }
+
+    function createRoundedButton(parent, options) {
+        var opts = options || {};
+        var size = opts.size || [UI_BUTTON_SIZE[0], UI_BUTTON_SIZE[1]];
+        var base = opts.baseColor || [0.2, 0.22, 0.26];
+        var hover = opts.hoverColor || offsetRgb(base, 0.04);
+        var down = opts.downColor || offsetRgb(base, -0.05);
+        var radius = (typeof opts.radius === "number") ? opts.radius : UI_BUTTON_RADIUS;
+        var bgOpacity = (typeof opts.backgroundOpacity === "number") ? opts.backgroundOpacity : DEFAULT_BUTTON_BG_OPACITY;
+
+        var wrap = parent.add("group");
+        wrap.orientation = "stack";
+        wrap.alignChildren = ["fill", "fill"];
+        wrap.preferredSize = [size[0], size[1]];
+        wrap.minimumSize = [size[0], size[1]];
+        wrap.maximumSize = [size[0], size[1]];
+        wrap.margins = [0, 0, 0, 0];
+
+        var bg = wrap.add("panel", undefined, "");
+        bg.alignment = ["fill", "fill"];
+        bg.margins = [0, 0, 0, 0];
+
+        var labelWrap = wrap.add("group");
+        labelWrap.alignment = ["fill", "fill"];
+        labelWrap.alignChildren = ["center", "center"];
+        labelWrap.margins = [0, 0, 0, 0];
+
+        var label = labelWrap.add("statictext", undefined, opts.text || "");
+        label.justify = "center";
+        try {
+            if (opts.font) label.graphics.font = opts.font;
+        } catch (fontErr) {}
+        setTextColor(label, opts.textColor || THEME.textMain);
+
+        var state = {
+            hover: false,
+            down: false,
+            opacity: bgOpacity
+        };
+
+        function redraw() {
+            try { bg.notify("onDraw"); } catch (e1) {}
+            try { wrap.visible = false; wrap.visible = true; } catch (e2) {}
+        }
+
+        function triggerClick() {
+            if (typeof opts.onClick === "function") {
+                opts.onClick();
+            }
+        }
+
+        function bindMouseEvents(ctrl) {
+            if (!ctrl) return;
+
+            try {
+                ctrl.addEventListener("mouseover", function () { state.hover = true; redraw(); });
+                ctrl.addEventListener("mouseout", function () { state.hover = false; state.down = false; redraw(); });
+                ctrl.addEventListener("mousedown", function () { state.down = true; redraw(); });
+                ctrl.addEventListener("mouseup", function () {
+                    var wasDown = state.down;
+                    state.down = false;
+                    redraw();
+                    if (wasDown) triggerClick();
+                });
+            } catch (eventErr) {
+                ctrl.onMouseEnter = function () { state.hover = true; redraw(); };
+                ctrl.onMouseExit = function () { state.hover = false; state.down = false; redraw(); };
+                ctrl.onMouseDown = function () { state.down = true; redraw(); };
+                ctrl.onMouseUp = function () {
+                    var wasDown = state.down;
+                    state.down = false;
+                    redraw();
+                    if (wasDown) triggerClick();
+                };
+            }
+        }
+
+        bg.onDraw = function () {
+            var g;
+            var w;
+            var h;
+            var rgb;
+
+            try {
+                g = this.graphics;
+                w = Math.max(1, this.size[0]);
+                h = Math.max(1, this.size[1]);
+
+                if (state.down) {
+                    rgb = down;
+                } else if (state.hover) {
+                    rgb = hover;
+                } else {
+                    rgb = base;
+                }
+
+                fillRoundedRect(g, w, h, radius, colorWithAlpha(rgb, state.opacity));
+            } catch (drawErr) {}
+        };
+
+        bindMouseEvents(wrap);
+        bindMouseEvents(bg);
+        bindMouseEvents(labelWrap);
+        bindMouseEvents(label);
+
+        redraw();
+
+        return {
+            view: wrap,
+            setBackgroundOpacity: function (opacityPercent) {
+                state.opacity = clamp(opacityPercent, 0, 100);
+                redraw();
+            },
+            setText: function (text) {
+                label.text = text;
+                redraw();
+            },
+            setTextColor: function (rgba) {
+                setTextColor(label, rgba);
+                redraw();
+            },
+            setEnabled: function (isEnabled) {
+                wrap.enabled = isEnabled;
+                bg.enabled = isEnabled;
+                label.enabled = isEnabled;
+                labelWrap.enabled = isEnabled;
+                redraw();
+            },
+            redraw: redraw
+        };
     }
 
     function clamp(value, minValue, maxValue) {
@@ -1332,6 +1519,7 @@
     }
 
     function setStatus(statusText, message, isError) {
+        if (!statusText) return;
         statusText.text = message;
         try {
             var g = statusText.graphics;
@@ -1530,27 +1718,43 @@
 
         var buttonGroup = contentGroup.add("group");
         buttonGroup.orientation = "column";
-        buttonGroup.alignChildren = ["fill", "top"];
-        buttonGroup.spacing = 10;
+        buttonGroup.alignChildren = ["center", "top"];
+        buttonGroup.spacing = 8;
 
-        var copyBtn = buttonGroup.add("button", undefined, "Copy");
-        copyBtn.preferredSize = [UI_BUTTON_SIZE[0], UI_BUTTON_SIZE[1]];
-        copyBtn.minimumSize = [UI_BUTTON_SIZE[0], UI_BUTTON_SIZE[1]];
-        copyBtn.maximumSize = [UI_BUTTON_SIZE[0], UI_BUTTON_SIZE[1]];
-        copyBtn.helpTip = "Copy selected image/shape layer to clipboard.";
+        var copyFont = getUIFont("BOLD", 17);
+        var pasteFont = getUIFont("REGULAR", 17);
+        var miniFont = getUIFont("REGULAR", 10);
+        var readyFont = getUIFont("REGULAR", 11);
+        var themedButtons = [];
+        var buttonBgOpacity = DEFAULT_BUTTON_BG_OPACITY;
 
-        var pasteBtn = buttonGroup.add("button", undefined, "Paste");
-        pasteBtn.preferredSize = [UI_BUTTON_SIZE[0], UI_BUTTON_SIZE[1]];
-        pasteBtn.minimumSize = [UI_BUTTON_SIZE[0], UI_BUTTON_SIZE[1]];
-        pasteBtn.maximumSize = [UI_BUTTON_SIZE[0], UI_BUTTON_SIZE[1]];
-        pasteBtn.helpTip = "Paste clipboard image into active composition.";
+        function registerThemedButton(btnObj) {
+            if (!btnObj) return;
+            themedButtons.push(btnObj);
+            btnObj.setBackgroundOpacity(buttonBgOpacity);
+        }
 
-        var copyFont = getUIFont("BOLD", 22);
-        var pasteFont = getUIFont("REGULAR", 22);
-        try { if (copyFont) copyBtn.graphics.font = copyFont; } catch (e1) {}
-        try { if (pasteFont) pasteBtn.graphics.font = pasteFont; } catch (e2) {}
-        setTextColor(copyBtn, THEME.textAccent);
-        setTextColor(pasteBtn, THEME.textMain);
+        var copyBtn = createRoundedButton(buttonGroup, {
+            text: "Copy",
+            size: [UI_BUTTON_SIZE[0], UI_BUTTON_SIZE[1]],
+            radius: UI_BUTTON_RADIUS,
+            baseColor: [0.17, 0.24, 0.32],
+            textColor: THEME.textAccent,
+            font: copyFont,
+            onClick: function () { doCopy(null); }
+        });
+        registerThemedButton(copyBtn);
+
+        var pasteBtn = createRoundedButton(buttonGroup, {
+            text: "Paste",
+            size: [UI_BUTTON_SIZE[0], UI_BUTTON_SIZE[1]],
+            radius: UI_BUTTON_RADIUS,
+            baseColor: [0.2, 0.22, 0.26],
+            textColor: THEME.textMain,
+            font: pasteFont,
+            onClick: function () { doPaste(null); }
+        });
+        registerThemedButton(pasteBtn);
 
         var bgPanel = contentGroup.add("panel", undefined, "Background");
         bgPanel.alignment = ["fill", "top"];
@@ -1561,17 +1765,66 @@
 
         var bgButtonsRow = bgPanel.add("group");
         bgButtonsRow.orientation = "row";
-        bgButtonsRow.alignChildren = ["left", "center"];
+        bgButtonsRow.alignChildren = ["center", "center"];
         bgButtonsRow.spacing = 6;
 
-        var pickColorBtn = bgButtonsRow.add("button", undefined, "Color...");
-        pickColorBtn.helpTip = "Choose panel background color.";
+        var pickColorBtn = createRoundedButton(bgButtonsRow, {
+            text: "Color",
+            size: [58, 22],
+            radius: UI_BUTTON_RADIUS,
+            baseColor: [0.2, 0.22, 0.26],
+            textColor: THEME.textMain,
+            font: miniFont,
+            onClick: function () {
+                var picked = pickColor(bgState.color);
+                if (picked) {
+                    bgState.color = picked;
+                    refreshBackground();
+                }
+            }
+        });
+        registerThemedButton(pickColorBtn);
 
-        var pickImageBtn = bgButtonsRow.add("button", undefined, "Image...");
-        pickImageBtn.helpTip = "Choose panel background image.";
+        var pickImageBtn = createRoundedButton(bgButtonsRow, {
+            text: "Image",
+            size: [58, 22],
+            radius: UI_BUTTON_RADIUS,
+            baseColor: [0.2, 0.22, 0.26],
+            textColor: THEME.textMain,
+            font: miniFont,
+            onClick: function () {
+                var imageFile = File.openDialog("Select background image", "Images:*.png;*.jpg;*.jpeg;*.bmp;*.gif");
+                if (!imageFile) return;
 
-        var clearImageBtn = bgButtonsRow.add("button", undefined, "Clear");
-        clearImageBtn.helpTip = "Remove background image and keep color only.";
+                var uiImage = loadScriptUIImage(imageFile);
+                if (!uiImage) {
+                    alert("Copy Pasta: Could not load that image file.");
+                    return;
+                }
+
+                bgState.image = uiImage;
+                bgState.imagePath = imageFile.fsName;
+                bgInfoText.text = "Mode: Image";
+                refreshBackground();
+            }
+        });
+        registerThemedButton(pickImageBtn);
+
+        var clearImageBtn = createRoundedButton(bgButtonsRow, {
+            text: "Clear",
+            size: [50, 22],
+            radius: UI_BUTTON_RADIUS,
+            baseColor: [0.2, 0.22, 0.26],
+            textColor: THEME.textMain,
+            font: miniFont,
+            onClick: function () {
+                bgState.image = null;
+                bgState.imagePath = "";
+                bgInfoText.text = "Mode: Color";
+                refreshBackground();
+            }
+        });
+        registerThemedButton(clearImageBtn);
 
         var opacityRow = bgPanel.add("group");
         opacityRow.orientation = "row";
@@ -1587,6 +1840,20 @@
         var opacityValue = opacityRow.add("statictext", undefined, Math.round(bgState.opacity) + "%");
         opacityValue.preferredSize = [38, -1];
 
+        var buttonOpacityRow = bgPanel.add("group");
+        buttonOpacityRow.orientation = "row";
+        buttonOpacityRow.alignChildren = ["fill", "center"];
+        buttonOpacityRow.spacing = 8;
+
+        var buttonOpacityLabel = buttonOpacityRow.add("statictext", undefined, "Buttons");
+        buttonOpacityLabel.preferredSize = [45, -1];
+
+        var buttonOpacitySlider = buttonOpacityRow.add("slider", undefined, buttonBgOpacity, 20, 100);
+        buttonOpacitySlider.alignment = ["fill", "center"];
+
+        var buttonOpacityValue = buttonOpacityRow.add("statictext", undefined, Math.round(buttonBgOpacity) + "%");
+        buttonOpacityValue.preferredSize = [38, -1];
+
         var bgInfoText = bgPanel.add("statictext", undefined, "Mode: Color");
         bgInfoText.alignment = ["fill", "top"];
         try {
@@ -1594,43 +1861,47 @@
             if (bgFont) {
                 opacityLabel.graphics.font = bgFont;
                 opacityValue.graphics.font = bgFont;
+                buttonOpacityLabel.graphics.font = bgFont;
+                buttonOpacityValue.graphics.font = bgFont;
                 bgInfoText.graphics.font = bgFont;
             }
         } catch (eBgFont) {}
         setTextColor(opacityLabel, THEME.textMuted);
         setTextColor(opacityValue, THEME.textMuted);
+        setTextColor(buttonOpacityLabel, THEME.textMuted);
+        setTextColor(buttonOpacityValue, THEME.textMuted);
         setTextColor(bgInfoText, THEME.textMuted);
 
-        pickColorBtn.onClick = function () {
-            var picked = pickColor(bgState.color);
-            if (picked) {
-                bgState.color = picked;
-                refreshBackground();
+        var readyRow = contentGroup.add("group");
+        readyRow.orientation = "row";
+        readyRow.alignChildren = ["center", "center"];
+        readyRow.alignment = ["fill", "top"];
+        readyRow.margins = [0, 2, 0, 0];
+
+        var readyToggleBtn = createRoundedButton(readyRow, {
+            text: "Ready (v" + SCRIPT_VERSION + ")",
+            size: [UI_BUTTON_SIZE[0], UI_BUTTON_SIZE[1]],
+            radius: UI_BUTTON_RADIUS,
+            baseColor: [0.18, 0.2, 0.24],
+            textColor: [0.76, 0.83, 0.9, 1.0],
+            font: readyFont,
+            onClick: function () {
+                setBackgroundPanelVisible(!bgPanel.visible);
             }
-        };
+        });
+        registerThemedButton(readyToggleBtn);
 
-        pickImageBtn.onClick = function () {
-            var imageFile = File.openDialog("Select background image", "Images:*.png;*.jpg;*.jpeg;*.bmp;*.gif");
-            if (!imageFile) return;
-
-            var uiImage = loadScriptUIImage(imageFile);
-            if (!uiImage) {
-                alert("Copy Pasta: Could not load that image file.");
-                return;
+        function setBackgroundPanelVisible(visible) {
+            bgPanel.visible = visible;
+            if (visible) {
+                bgPanel.maximumSize = [10000, 10000];
+            } else {
+                bgPanel.maximumSize = [0, 0];
             }
-
-            bgState.image = uiImage;
-            bgState.imagePath = imageFile.fsName;
-            bgInfoText.text = "Mode: Image";
+            try { pal.layout.layout(true); } catch (layoutErr1) {}
+            try { pal.layout.resize(); } catch (layoutErr2) {}
             refreshBackground();
-        };
-
-        clearImageBtn.onClick = function () {
-            bgState.image = null;
-            bgState.imagePath = "";
-            bgInfoText.text = "Mode: Color";
-            refreshBackground();
-        };
+        }
 
         opacitySlider.onChanging = function () {
             bgState.opacity = Math.round(opacitySlider.value);
@@ -1638,20 +1909,19 @@
             refreshBackground();
         };
 
+        buttonOpacitySlider.onChanging = function () {
+            var i;
+            buttonBgOpacity = Math.round(buttonOpacitySlider.value);
+            buttonOpacityValue.text = buttonBgOpacity + "%";
+
+            for (i = 0; i < themedButtons.length; i++) {
+                themedButtons[i].setBackgroundOpacity(buttonBgOpacity);
+            }
+        };
+
         opacitySlider.onChange = opacitySlider.onChanging;
-
-        var statusPanel = contentGroup.add("panel", undefined, "");
-        statusPanel.alignment = ["fill", "top"];
-        statusPanel.margins = [10, 10, 10, 10];
-
-        var statusText = statusPanel.add("statictext", undefined, "Ready (v" + SCRIPT_VERSION + ").");
-        statusText.alignment = ["fill", "top"];
-        statusText.justify = "center";
-        try {
-            var statusFont = getUIFont("REGULAR", 11);
-            if (statusFont) statusText.graphics.font = statusFont;
-        } catch (e3) {}
-        setTextColor(statusText, THEME.textMuted);
+        buttonOpacitySlider.onChange = buttonOpacitySlider.onChanging;
+        setBackgroundPanelVisible(false);
 
         var tagText = contentGroup.add("statictext", undefined, "@g.fnaa");
         tagText.alignment = ["fill", "top"];
@@ -1661,14 +1931,6 @@
             if (tagFont) tagText.graphics.font = tagFont;
         } catch (e4) {}
         setTextColor(tagText, [0.56, 0.76, 0.9, 1.0]);
-
-        copyBtn.onClick = function () {
-            doCopy(statusText);
-        };
-
-        pasteBtn.onClick = function () {
-            doPaste(statusText);
-        };
 
         pal.onResizing = pal.onResize = function () {
             this.layout.resize();
