@@ -3,11 +3,14 @@
 
 (function CopyPastaPanel(thisObj) {
     var SCRIPT_NAME = "Copy Pasta";
-    var SCRIPT_VERSION = "1.9";
+    var SCRIPT_VERSION = "1.14";
     var TEMP_FOLDER_NAME = "CopyPastaTemp";
     var IMPORT_FOLDER_NAME = "CopyPasta Imports";
     var WINDOWS_HELPER_EXE_NAME = "copy_pasta_clipboard_helper.exe";
     var WINDOWS_HELPER_SRC_NAME = "copy_pasta_clipboard_helper.cs";
+    var DEFAULT_BG_COLOR = [0.13, 0.13, 0.13, 1.0];
+    var DEFAULT_BG_OPACITY = 90;
+    var UI_BUTTON_SIZE = [240, 40];
     var THEME = {
         textMain: [0.93, 0.95, 0.98, 1.0],
         textAccent: [0.4, 0.78, 0.99, 1.0],
@@ -645,6 +648,42 @@
             var g = control.graphics;
             g.foregroundColor = g.newPen(g.PenType.SOLID_COLOR, rgba, 1);
         } catch (e) {}
+    }
+
+    function clamp(value, minValue, maxValue) {
+        if (value < minValue) return minValue;
+        if (value > maxValue) return maxValue;
+        return value;
+    }
+
+    function colorToPickerInt(rgba) {
+        var r = Math.round(clamp(rgba[0], 0, 1) * 255);
+        var g = Math.round(clamp(rgba[1], 0, 1) * 255);
+        var b = Math.round(clamp(rgba[2], 0, 1) * 255);
+        return (r << 16) | (g << 8) | b;
+    }
+
+    function pickerIntToColor(colorInt) {
+        return [
+            ((colorInt >> 16) & 255) / 255,
+            ((colorInt >> 8) & 255) / 255,
+            (colorInt & 255) / 255,
+            1.0
+        ];
+    }
+
+    function pickColor(initialColor) {
+        var picked = $.colorPicker(colorToPickerInt(initialColor));
+        if (picked < 0) return null;
+        return pickerIntToColor(picked);
+    }
+
+    function loadScriptUIImage(fileObj) {
+        try {
+            return ScriptUI.newImage(fileObj);
+        } catch (e) {
+            return null;
+        }
     }
 
     function isShapeLayer(layer) {
@@ -1406,8 +1445,42 @@
         }
     }
 
-    function applyWindowStyle(win) {
-        return;
+    function applyWindowStyle(win, bgState) {
+        if (!win || !bgState) return;
+
+        win.onDraw = function () {
+            var g;
+            var width;
+            var height;
+            var opacity;
+            var color;
+
+            try {
+                g = this.graphics;
+                width = this.size[0];
+                height = this.size[1];
+                opacity = clamp(bgState.opacity / 100, 0, 1);
+                color = bgState.color || DEFAULT_BG_COLOR;
+
+                g.newPath();
+                g.rectPath(0, 0, width, height);
+
+                if (bgState.image) {
+                    g.fillPath(g.newBrush(g.BrushType.SOLID_COLOR, [color[0], color[1], color[2], 1.0]));
+                    try {
+                        g.drawImage(bgState.image, 0, 0, width, height);
+                    } catch (imgErr) {}
+
+                    if (opacity < 1.0) {
+                        g.newPath();
+                        g.rectPath(0, 0, width, height);
+                        g.fillPath(g.newBrush(g.BrushType.SOLID_COLOR, [0, 0, 0, 1.0 - opacity]));
+                    }
+                } else {
+                    g.fillPath(g.newBrush(g.BrushType.SOLID_COLOR, [color[0], color[1], color[2], opacity]));
+                }
+            } catch (drawErr) {}
+        };
     }
 
     function buildUI(thisObj) {
@@ -1422,7 +1495,20 @@
         pal.spacing = 10;
         pal.margins = 16;
 
-        applyWindowStyle(pal);
+        var bgState = {
+            color: [DEFAULT_BG_COLOR[0], DEFAULT_BG_COLOR[1], DEFAULT_BG_COLOR[2], 1.0],
+            opacity: DEFAULT_BG_OPACITY,
+            image: null,
+            imagePath: ""
+        };
+
+        applyWindowStyle(pal, bgState);
+
+        function refreshBackground() {
+            try { pal.notify("onDraw"); } catch (e1) {}
+            try { pal.layout.layout(true); } catch (e2) {}
+            try { pal.layout.resize(); } catch (e3) {}
+        }
 
         var buttonGroup = pal.add("group");
         buttonGroup.orientation = "column";
@@ -1430,19 +1516,111 @@
         buttonGroup.spacing = 10;
 
         var copyBtn = buttonGroup.add("button", undefined, "Copy");
-        copyBtn.preferredSize = [280, 48];
+        copyBtn.preferredSize = [UI_BUTTON_SIZE[0], UI_BUTTON_SIZE[1]];
+        copyBtn.minimumSize = [UI_BUTTON_SIZE[0], UI_BUTTON_SIZE[1]];
+        copyBtn.maximumSize = [UI_BUTTON_SIZE[0], UI_BUTTON_SIZE[1]];
         copyBtn.helpTip = "Copy selected image/shape layer to clipboard.";
 
         var pasteBtn = buttonGroup.add("button", undefined, "Paste");
-        pasteBtn.preferredSize = [280, 48];
+        pasteBtn.preferredSize = [UI_BUTTON_SIZE[0], UI_BUTTON_SIZE[1]];
+        pasteBtn.minimumSize = [UI_BUTTON_SIZE[0], UI_BUTTON_SIZE[1]];
+        pasteBtn.maximumSize = [UI_BUTTON_SIZE[0], UI_BUTTON_SIZE[1]];
         pasteBtn.helpTip = "Paste clipboard image into active composition.";
 
-        var copyFont = getUIFont("BOLD", 20);
-        var pasteFont = getUIFont("REGULAR", 20);
+        var copyFont = getUIFont("BOLD", 22);
+        var pasteFont = getUIFont("REGULAR", 22);
         try { if (copyFont) copyBtn.graphics.font = copyFont; } catch (e1) {}
         try { if (pasteFont) pasteBtn.graphics.font = pasteFont; } catch (e2) {}
         setTextColor(copyBtn, THEME.textAccent);
         setTextColor(pasteBtn, THEME.textMain);
+
+        var bgPanel = pal.add("panel", undefined, "Background");
+        bgPanel.alignment = ["fill", "top"];
+        bgPanel.orientation = "column";
+        bgPanel.alignChildren = ["fill", "top"];
+        bgPanel.spacing = 8;
+        bgPanel.margins = [10, 14, 10, 10];
+
+        var bgButtonsRow = bgPanel.add("group");
+        bgButtonsRow.orientation = "row";
+        bgButtonsRow.alignChildren = ["left", "center"];
+        bgButtonsRow.spacing = 6;
+
+        var pickColorBtn = bgButtonsRow.add("button", undefined, "Color...");
+        pickColorBtn.helpTip = "Choose panel background color.";
+
+        var pickImageBtn = bgButtonsRow.add("button", undefined, "Image...");
+        pickImageBtn.helpTip = "Choose panel background image.";
+
+        var clearImageBtn = bgButtonsRow.add("button", undefined, "Clear");
+        clearImageBtn.helpTip = "Remove background image and keep color only.";
+
+        var opacityRow = bgPanel.add("group");
+        opacityRow.orientation = "row";
+        opacityRow.alignChildren = ["fill", "center"];
+        opacityRow.spacing = 8;
+
+        var opacityLabel = opacityRow.add("statictext", undefined, "Opacity");
+        opacityLabel.preferredSize = [45, -1];
+
+        var opacitySlider = opacityRow.add("slider", undefined, bgState.opacity, 0, 100);
+        opacitySlider.alignment = ["fill", "center"];
+
+        var opacityValue = opacityRow.add("statictext", undefined, Math.round(bgState.opacity) + "%");
+        opacityValue.preferredSize = [38, -1];
+
+        var bgInfoText = bgPanel.add("statictext", undefined, "Mode: Color");
+        bgInfoText.alignment = ["fill", "top"];
+        try {
+            var bgFont = getUIFont("REGULAR", 10);
+            if (bgFont) {
+                opacityLabel.graphics.font = bgFont;
+                opacityValue.graphics.font = bgFont;
+                bgInfoText.graphics.font = bgFont;
+            }
+        } catch (eBgFont) {}
+        setTextColor(opacityLabel, THEME.textMuted);
+        setTextColor(opacityValue, THEME.textMuted);
+        setTextColor(bgInfoText, THEME.textMuted);
+
+        pickColorBtn.onClick = function () {
+            var picked = pickColor(bgState.color);
+            if (picked) {
+                bgState.color = picked;
+                refreshBackground();
+            }
+        };
+
+        pickImageBtn.onClick = function () {
+            var imageFile = File.openDialog("Select background image", "Images:*.png;*.jpg;*.jpeg;*.bmp;*.gif");
+            if (!imageFile) return;
+
+            var uiImage = loadScriptUIImage(imageFile);
+            if (!uiImage) {
+                alert("Copy Pasta: Could not load that image file.");
+                return;
+            }
+
+            bgState.image = uiImage;
+            bgState.imagePath = imageFile.fsName;
+            bgInfoText.text = "Mode: Image";
+            refreshBackground();
+        };
+
+        clearImageBtn.onClick = function () {
+            bgState.image = null;
+            bgState.imagePath = "";
+            bgInfoText.text = "Mode: Color";
+            refreshBackground();
+        };
+
+        opacitySlider.onChanging = function () {
+            bgState.opacity = Math.round(opacitySlider.value);
+            opacityValue.text = bgState.opacity + "%";
+            refreshBackground();
+        };
+
+        opacitySlider.onChange = opacitySlider.onChanging;
 
         var statusPanel = pal.add("panel", undefined, "");
         statusPanel.alignment = ["fill", "top"];
@@ -1478,6 +1656,7 @@
             this.layout.resize();
         };
 
+        refreshBackground();
         pal.layout.layout(true);
         return pal;
     }
